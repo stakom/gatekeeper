@@ -1,16 +1,23 @@
 export default async function handler(req, res) {
-    // Разрешаем запросы только GET
+    // 1. Проверка метода
     if (req.method !== 'GET') return res.status(405).send('Method Not Allowed');
 
-    const { sponsor } = req.query; // Получаем ник спонсора из запроса
-    const GITHUB_TOKEN = process.env.GITHUB_TOKEN; // Секретный ключ из настроек Vercel
-    const OWNER = "stakom"; // Твой ник на GitHub
-    const PRIVATE_REPO = "sky-scripts"; // Название твоего ПРИВАТНОГО репозитория
+    const { sponsor } = req.query;
+    
+    // 2. Проверка секретного ключа (чтобы никто другой не дергал твой API)
+    const LOADER_SECRET = "SkyBlock_Ultra_Secret_Key_998811"; 
+    if (req.headers['x-access-key'] !== LOADER_SECRET) {
+        return res.status(401).send("Unauthorized: Invalid API Key");
+    }
+
+    const GITHUB_TOKEN = process.env.GITHUB_TOKEN; // Должен быть прописан в Environment Variables на Vercel
+    const OWNER = "stakom";
+    const PRIVATE_REPO = "sky-scripts";
 
     if (!sponsor) return res.status(400).send('Missing sponsor parameter');
 
     try {
-        // 1. Сначала идем в приватный репозиторий за списком юзеров (users.json)
+        // 3. Загружаем список разрешенных пользователей
         const authUrl = `https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/users.json`;
         const authResponse = await fetch(authUrl, {
             headers: { 
@@ -24,12 +31,12 @@ export default async function handler(req, res) {
         const authData = await authResponse.json();
         const allowedUsers = authData.allowed_users.map(u => u.toLowerCase());
 
-        // 2. Проверяем, есть ли спонсор в списке
+        // 4. Проверка лицензии
         if (!allowedUsers.includes(sponsor.toLowerCase())) {
             return res.status(403).send('Access Denied: License not found');
         }
 
-        // 3. Если спонсор найден, скачиваем основной код (main.js)
+        // 5. Загружаем основной код (main.js)
         const codeUrl = `https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/main.js`;
         const codeResponse = await fetch(codeUrl, {
             headers: { 
@@ -42,10 +49,11 @@ export default async function handler(req, res) {
 
         const mainCode = await codeResponse.text();
 
-        // 4. Отдаем код боту
+        // 6. Отдаем код боту
         res.setHeader('Content-Type', 'text/javascript');
         return res.status(200).send(mainCode);
 
     } catch (error) {
         return res.status(500).send('Server Error: ' + error.message);
     }
+}
