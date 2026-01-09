@@ -1,7 +1,6 @@
 export default async function handler(req, res) {
-    // Устанавливаем заголовки, чтобы Minecraft понимал текст
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    
+
     const { sponsor, hwid, script } = req.query;
     const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
     const OWNER = "stakom";
@@ -13,49 +12,49 @@ export default async function handler(req, res) {
     };
 
     try {
-        if (!sponsor || !hwid) return res.status(200).send('ОШИБКА: Нет данных (sponsor/hwid)');
-        if (!GITHUB_TOKEN) return res.status(200).send('ОШИБКА: GITHUB_TOKEN не настроен в Vercel');
+        if (!sponsor || !hwid) return res.status(200).send('ОШИБКА: Нет данных запроса');
+        if (!GITHUB_TOKEN) return res.status(200).send('ОШИБКА: Токен Vercel не настроен');
 
         const target = SCRIPT_CONFIG[script] || SCRIPT_CONFIG["farm"];
+        const headers = {
+            'Authorization': `Bearer ${GITHUB_TOKEN}`,
+            'Accept': 'application/vnd.github.v3.raw',
+            'User-Agent': 'Vercel-Script-Gatekeeper'
+        };
 
-        // 1. Пробуем получить файл лицензий
-        const authUrl = `https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/${target.auth}`;
-        const authRes = await fetch(authUrl, {
-            headers: { 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github.v3.raw' }
-        });
-
-        if (authRes.status === 404) {
-            return res.status(200).send(`ОШИБКА: Файл ${target.auth} не найден в репозитории ${PRIVATE_REPO}`);
-        }
-
-        if (!authRes.ok) {
-            return res.status(200).send(`ОШИБКА ГИТХАБА: Статус ${authRes.status}`);
-        }
+        // 1. Загрузка JSON лицензий
+        const authRes = await fetch(`https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/${target.auth}`, { headers });
+        if (!authRes.ok) return res.status(200).send(`ОШИБКА: Файл ${target.auth} не найден`);
 
         const authData = await authRes.json();
+        const groups = authData.access_groups || [];
+
+        // 2. Логика проверки: ищем группу, где есть и этот ник, и этот HWID
+        let authorized = false;
         
-        // 2. Проверка ника
-        const userKey = Object.keys(authData.allowed_users || {}).find(k => k.toLowerCase() === sponsor.toLowerCase());
-        if (!userKey) return res.status(200).send('SERVER_ERROR_AUTH_FAILED');
+        for (const group of groups) {
+            const nameMatch = group.names.some(n => n.toLowerCase() === sponsor.toLowerCase());
+            const hwidMatch = group.hwids.includes(hwid);
+            
+            if (nameMatch && hwidMatch) {
+                authorized = true;
+                break;
+            }
+        }
 
-        // 3. Проверка HWID
-        const allowed = authData.allowed_users[userKey];
-        const isAuth = Array.isArray(allowed) ? allowed.includes(hwid) : (allowed === hwid);
+        if (!authorized) {
+            return res.status(200).send('SERVER_ERROR_AUTH_FAILED_OR_HWID_MISMATCH');
+        }
 
-        if (!isAuth) return res.status(200).send('SERVER_ERROR_HWID_MISMATCH');
+        // 3. Загрузка и отдача кода
+        const codeRes = await fetch(`https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/${target.code}`, { headers });
+        if (!codeRes.ok) return res.status(200).send('ОШИБКА: Файл кода не найден');
 
-        // 4. Получаем код скрипта
-        const codeUrl = `https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/${target.code}`;
-        const codeRes = await fetch(codeUrl, {
-            headers: { 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github.v3.raw' }
-        });
-
-        if (!codeRes.ok) return res.status(200).send(`ОШИБКА: Код ${target.code} не найден`);
-
-        const finalCode = await codeRes.text();
-        return res.status(200).send(finalCode);
+        const codeContent = await codeRes.text();
+        res.setHeader('Content-Type', 'text/javascript');
+        return res.status(200).send(codeContent);
 
     } catch (err) {
-        return res.status(200).send(`КРИТИЧЕСКАЯ ОШИБКА СЕРВЕРА: ${err.message}`);
+        return res.status(200).send(`КРИТИЧЕСКИЙ СБОЙ: ${err.message}`);
     }
 }
