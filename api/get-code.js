@@ -1,50 +1,59 @@
 export default async function handler(req, res) {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    
     const { sponsor, hwid, script } = req.query;
     const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
     const OWNER = "stakom";
     const PRIVATE_REPO = "sky-scripts";
 
+    // Настройка путей
     const SCRIPT_CONFIG = {
         "farm": { auth: "users.json", code: "main.js" },
         "obsidian": { auth: "users_obsidian.json", code: "obsidian.js" }
     };
 
     if (!sponsor || !hwid) return res.status(200).send('SERVER_ERROR_NO_DATA');
-    const target = SCRIPT_CONFIG[script] || SCRIPT_CONFIG["farm"];
+
+    // Если script не указан — это старый лоадер, выдаем farm
+    const current = SCRIPT_CONFIG[script] || SCRIPT_CONFIG["farm"];
 
     try {
-        const authUrl = `https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/${target.auth}`;
-        const authResponse = await fetch(authUrl, {
+        // 1. Пробуем загрузить базу лицензий
+        const authResponse = await fetch(`https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/${current.auth}`, {
             headers: { 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github.v3.raw' }
         });
 
-        // Если файла нет или GitHub недоступен
-        if (!authResponse.ok) return res.status(200).send('SERVER_ERROR_GITHUB_FILE_NOT_FOUND');
-        
-        const authData = await authResponse.json();
-        
-        // Защита: если файл на GitHub пустой или неверный формат
-        if (!authData || !authData.allowed_users) return res.status(200).send('SERVER_ERROR_INVALID_JSON');
+        if (!authResponse.ok) {
+            return res.status(200).send(`SERVER_ERROR: Файл лицензий ${current.auth} не найден в GitHub!`);
+        }
 
+        const authData = await authResponse.json();
+        if (!authData.allowed_users) return res.status(200).send('SERVER_ERROR_INVALID_JSON_FORMAT');
+
+        // 2. Ищем пользователя
         const userKey = Object.keys(authData.allowed_users).find(k => k.toLowerCase() === sponsor.toLowerCase());
         if (!userKey) return res.status(200).send('SERVER_ERROR_AUTH_FAILED');
 
-        const allowedData = authData.allowed_users[userKey];
-        const isAuthorized = Array.isArray(allowedData) ? allowedData.includes(hwid) : (allowedData === hwid);
+        // 3. Проверяем HWID
+        const allowed = authData.allowed_users[userKey];
+        const isAuth = Array.isArray(allowed) ? allowed.includes(hwid) : (allowed === hwid);
 
-        if (!isAuthorized) return res.status(200).send('SERVER_ERROR_HWID_MISMATCH');
+        if (!isAuth) return res.status(200).send('SERVER_ERROR_HWID_MISMATCH');
 
-        const codeResponse = await fetch(`https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/${target.code}`, {
+        // 4. Тянем сам код
+        const codeResponse = await fetch(`https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/${current.code}`, {
             headers: { 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github.v3.raw' }
         });
 
-        const scriptContent = await codeResponse.text();
-        res.setHeader('Content-Type', 'text/javascript');
-        return res.status(200).send(scriptContent);
+        if (!codeResponse.ok) {
+            return res.status(200).send(`SERVER_ERROR: Файл скрипта ${current.code} не найден!`);
+        }
 
-    } catch (error) {
-        // Выводим ошибку в лог Vercel, но клиенту шлем статус 200 с текстом ошибки
-        console.error(error);
-        return res.status(200).send('SERVER_ERROR_FATAL');
+        const mainCode = await codeResponse.text();
+        return res.status(200).send(mainCode);
+
+    } catch (e) {
+        // Ошибка может быть, если JSON кривой. Выведем её текст вместо падения 500.
+        return res.status(200).send('SERVER_ERROR_FATAL: ' + e.message);
     }
 }
