@@ -4,10 +4,13 @@ export default async function handler(req, res) {
     const OWNER = "stakom";
     const PRIVATE_REPO = "sky-scripts";
 
-    if (!sponsor) return res.status(400).send('Missing sponsor parameter');
+    // Базовая проверка наличия параметра
+    if (!sponsor) {
+        return res.status(200).send('SERVER_ERROR: Missing sponsor parameter');
+    }
 
     try {
-        // 1. Получаем список пользователей
+        // 1. Получаем список разрешенных пользователей из GitHub
         const authUrl = `https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/users.json`;
         const authResponse = await fetch(authUrl, {
             headers: { 
@@ -16,18 +19,21 @@ export default async function handler(req, res) {
             }
         });
 
-        if (!authResponse.ok) return res.status(500).send('Auth DB Error');
+        if (!authResponse.ok) {
+            // Возвращаем 200, чтобы не провоцировать Java на вывод URL ошибки
+            return res.status(200).send('SERVER_ERROR: Auth Database unreachable');
+        }
         
         const authData = await authResponse.json();
         const allowedUsers = authData.allowed_users.map(u => u.toLowerCase());
 
-        // 2. Проверка ника
+        // 2. Проверка ника (регистронезависимая)
         const userNick = sponsor.toLowerCase();
         if (!allowedUsers.includes(userNick)) {
-            return res.status(403).send('Access Denied');
+            return res.status(200).send('SERVER_ERROR_AUTH_FAILED');
         }
 
-        // 3. Получаем основной код
+        // 3. Получаем основной код скрипта (main.js) из GitHub
         const codeUrl = `https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/main.js`;
         const codeResponse = await fetch(codeUrl, {
             headers: { 
@@ -36,36 +42,38 @@ export default async function handler(req, res) {
             }
         });
 
-        if (!codeResponse.ok) return res.status(500).send('Script Fetch Error');
+        if (!codeResponse.ok) {
+            return res.status(200).send('SERVER_ERROR: Script file not found on GitHub');
+        }
 
         let mainCode = await codeResponse.text();
 
-        // =========================================================
-        // 4. ПРИВЯЗКА КОДА К НИКУ (Server-Side Injection)
-        // =========================================================
-        
-        // Создаем проверочный префикс. 
-        // Мы используем String.fromCharCode, чтобы ИИ или хакер не нашли ник простым поиском текста.
-        const encodedNick = sponsor.split('').map(char => char.charCodeAt(0)).join(',');
-        
+        // 4. Генерируем защиту (License Binding)
+        // Превращаем ник в массив ASCII-кодов, чтобы его нельзя было найти обычным поиском по тексту
+        const nickBytes = sponsor.split('').map(char => char.charCodeAt(0)).join(',');
+
         const securityPrefix = `
-(function(){
-    var _0xTarget = [${encodedNick}].map(function(c){return String.fromCharCode(c)}).join('');
-    if (typeof SponsorNickname === 'undefined' || SponsorNickname.toLowerCase() !== _0xTarget.toLowerCase()) {
-        var msg = "§c§l[Auth] §fЭтот скрипт был куплен игроком §b" + _0xTarget + "§f и не работает у вас!";
-        if (typeof Chat !== 'undefined') { Chat.log(msg); }
-        throw "License Auth Failed";
+/* --- СИСТЕМА ЗАЩИТЫ --- */
+(function() {
+    var _target = [${nickBytes}].map(function(c){ return String.fromCharCode(c); }).join('');
+    if (typeof SponsorNickname === 'undefined' || SponsorNickname.toLowerCase() !== _target.toLowerCase()) {
+        Chat.log("§c§l[Лицензия] §fОшибка авторизации! Скрипт привязан к нику: §b" + _target);
+        throw "License mismatch";
     }
 })();
+/* ----------------------- */
 `;
 
-        // Соединяем проверку и основной код
-        const protectedCode = securityPrefix + "\n" + mainCode;
+        // 5. Собираем финальный код
+        // Можно также добавить замену меток внутри кода, если они там есть
+        const finalCode = securityPrefix + "\n" + mainCode;
 
+        // Отправляем результат
         res.setHeader('Content-Type', 'text/javascript');
-        return res.status(200).send(protectedCode);
+        return res.status(200).send(finalCode);
 
     } catch (error) {
-        return res.status(500).send('Error: ' + error.message);
+        // Даже при фатальной ошибке сервера возвращаем 200 с текстом ошибки
+        return res.status(200).send('SERVER_ERROR: ' + error.message);
     }
 }
