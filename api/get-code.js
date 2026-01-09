@@ -4,73 +4,47 @@ export default async function handler(req, res) {
     const OWNER = "stakom";
     const PRIVATE_REPO = "sky-scripts";
 
-    // 1. Конфигурация
     const SCRIPT_CONFIG = {
-        "farm": { // Это наш основной Автофарм
-            auth: "users.json",
-            code: "main.js"
-        },
-        "obsidian": { // Это новый скрипт
-            auth: "users_obsidian.json",
-            code: "obsidian.js"
-        }
+        "farm": { auth: "users.json", code: "main.js" },
+        "obsidian": { auth: "users_obsidian.json", code: "obsidian.js" }
     };
 
-    // Проверка обязательных данных (sponsor и hwid приходят и от старого, и от нового лоадера)
     if (!sponsor || !hwid) return res.status(200).send('SERVER_ERROR_NO_DATA');
-
-    // --- ЛОГИКА СОВМЕСТИМОСТИ ---
-    // Если параметр script пустой (старый лоадер), принудительно ставим "farm"
-    const targetKey = script ? script.toLowerCase() : "farm";
-    const currentConfig = SCRIPT_CONFIG[targetKey] || SCRIPT_CONFIG["farm"];
-    // ----------------------------
+    const target = SCRIPT_CONFIG[script] || SCRIPT_CONFIG["farm"];
 
     try {
-        // 2. Загружаем нужную базу лицензий
-        const authUrl = `https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/${currentConfig.auth}`;
+        const authUrl = `https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/${target.auth}`;
         const authResponse = await fetch(authUrl, {
-            headers: { 
-                'Authorization': `Bearer ${GITHUB_TOKEN}`,
-                'Accept': 'application/vnd.github.v3.raw'
-            }
+            headers: { 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github.v3.raw' }
         });
 
-        if (!authResponse.ok) return res.status(200).send('SERVER_ERROR_AUTH_DB');
+        // Если файла нет или GitHub недоступен
+        if (!authResponse.ok) return res.status(200).send('SERVER_ERROR_GITHUB_FILE_NOT_FOUND');
         
         const authData = await authResponse.json();
-        const allowedUsers = authData.allowed_users;
+        
+        // Защита: если файл на GitHub пустой или неверный формат
+        if (!authData || !authData.allowed_users) return res.status(200).send('SERVER_ERROR_INVALID_JSON');
 
-        // 3. Проверка ника
-        const userKey = Object.keys(allowedUsers).find(k => k.toLowerCase() === sponsor.toLowerCase());
+        const userKey = Object.keys(authData.allowed_users).find(k => k.toLowerCase() === sponsor.toLowerCase());
         if (!userKey) return res.status(200).send('SERVER_ERROR_AUTH_FAILED');
 
-        // 4. Проверка HWID (поддержка и строк, и массивов для гибкости)
-        const allowedData = allowedUsers[userKey];
-        let isAuthorized = false;
-        if (Array.isArray(allowedData)) {
-            isAuthorized = allowedData.includes(hwid);
-        } else {
-            isAuthorized = (allowedData === hwid);
-        }
+        const allowedData = authData.allowed_users[userKey];
+        const isAuthorized = Array.isArray(allowedData) ? allowedData.includes(hwid) : (allowedData === hwid);
 
         if (!isAuthorized) return res.status(200).send('SERVER_ERROR_HWID_MISMATCH');
 
-        // 5. Загрузка и отдача кода
-        const codeUrl = `https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/${currentConfig.code}`;
-        const codeResponse = await fetch(codeUrl, {
-            headers: { 
-                'Authorization': `Bearer ${GITHUB_TOKEN}`,
-                'Accept': 'application/vnd.github.v3.raw'
-            }
+        const codeResponse = await fetch(`https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/${target.code}`, {
+            headers: { 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github.v3.raw' }
         });
-
-        if (!codeResponse.ok) return res.status(200).send('SERVER_ERROR_CODE_NOT_FOUND');
 
         const scriptContent = await codeResponse.text();
         res.setHeader('Content-Type', 'text/javascript');
         return res.status(200).send(scriptContent);
 
     } catch (error) {
+        // Выводим ошибку в лог Vercel, но клиенту шлем статус 200 с текстом ошибки
+        console.error(error);
         return res.status(200).send('SERVER_ERROR_FATAL');
     }
 }
