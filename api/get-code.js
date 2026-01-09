@@ -1,12 +1,33 @@
+const crypto = require('crypto');
+
 export default async function handler(req, res) {
-    const { sponsor, hwid } = req.query;
+    const { sponsor, hwid, sig, t } = req.query;
+    
+    const SIARO = "MIEFKR";
     const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
     const OWNER = "stakom";
     const PRIVATE_REPO = "sky-scripts";
 
-    if (!sponsor || !hwid) return res.status(200).send('SERVER_ERROR_NO_DATA');
+    if (!sponsor || !hwid || !sig || !t) {
+        return res.status(200).send('SERVER_ERROR_INVALID_REQUEST');
+    }
+
+    // 1. ПРОВЕРКА ПОДПИСИ (Защита от подбора параметров)
+    const serverData = `${sponsor}:${hwid}:${SECRET_KEY}:${t}`;
+    const serverSig = crypto.createHash('md5').update(serverData).digest("hex");
+
+    if (serverSig !== sig) {
+        return res.status(200).send('SERVER_ERROR_SIGNATURE_FAIL');
+    }
+
+    // 2. ПРОВЕРКА ВРЕМЕНИ (Ссылка живет 5 минут)
+    const requestTime = parseInt(t);
+    if (Date.now() - requestTime > 300000) {
+        return res.status(200).send('SERVER_ERROR_LINK_EXPIRED');
+    }
 
     try {
+        // Получаем список разрешенных юзеров
         const authUrl = `https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/users.json`;
         const authResponse = await fetch(authUrl, {
             headers: { 
@@ -15,24 +36,15 @@ export default async function handler(req, res) {
             }
         });
 
-        if (!authResponse.ok) return res.status(200).send('SERVER_ERROR_AUTH_DB');
-        
         const authData = await authResponse.json();
-        const allowedUsers = authData.allowed_users; // Теперь это объект { "ник": "ид" }
+        const allowedUsers = authData.allowed_users;
 
-        // Проверка ника (без учета регистра)
-        const userKey = Object.keys(allowedUsers).find(k => k.toLowerCase() === sponsor.toLowerCase());
-
-        if (!userKey) {
+        // Проверка HWID
+        if (!allowedUsers[sponsor] || allowedUsers[sponsor] !== hwid) {
             return res.status(200).send('SERVER_ERROR_AUTH_FAILED');
         }
 
-        // Проверка HWID
-        if (allowedUsers[userKey] !== hwid) {
-            return res.status(200).send('SERVER_ERROR_HWID_MISMATCH');
-        }
-
-        // Если всё верно — тянем код
+        // Получаем основной код (main.js)
         const codeUrl = `https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/main.js`;
         const codeResponse = await fetch(codeUrl, {
             headers: { 
