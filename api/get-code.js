@@ -1,28 +1,10 @@
-const crypto = require('crypto');
-
 export default async function handler(req, res) {
-    const { sponsor, hwid, sig, t } = req.query;
-    
-    const SIARO = "MIEFKR"; 
-    
+    const { sponsor, hwid } = req.query;
     const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
     const OWNER = "stakom";
     const PRIVATE_REPO = "sky-scripts";
 
-    if (!sponsor || !hwid || !sig || !t) {
-        return res.status(200).send('SERVER_ERROR_BAD_REQUEST');
-    }
-
-    const serverCheckData = sponsor + hwid + SIARO + t;
-    const serverSig = crypto.createHash('md5').update(serverCheckData).digest("hex");
-
-    if (serverSig !== sig) {
-        return res.status(200).send('SERVER_ERROR_SIGNATURE_MISMATCH');
-    }
-
-    if (Date.now() - parseInt(t) > 300000) {
-        return res.status(200).send('SERVER_ERROR_LINK_EXPIRED');
-    }
+    if (!sponsor || !hwid) return res.status(200).send('SERVER_ERROR_NO_DATA');
 
     try {
         const authUrl = `https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/users.json`;
@@ -38,9 +20,16 @@ export default async function handler(req, res) {
         const authData = await authResponse.json();
         const allowedUsers = authData.allowed_users;
 
-        if (!allowedUsers[sponsor] || allowedUsers[sponsor] !== hwid) {
-            return res.status(200).send('SERVER_ERROR_HWID_NOT_REGISTERED');
+        const userKey = Object.keys(allowedUsers).find(k => k.toLowerCase() === sponsor.toLowerCase());
+
+        if (!userKey) {
+            return res.status(200).send('SERVER_ERROR_AUTH_FAILED');
         }
+
+        if (allowedUsers[userKey] !== hwid) {
+            return res.status(200).send('SERVER_ERROR_HWID_MISMATCH');
+        }
+
         const codeUrl = `https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/main.js`;
         const codeResponse = await fetch(codeUrl, {
             headers: { 
@@ -49,14 +38,11 @@ export default async function handler(req, res) {
             }
         });
 
-        if (!codeResponse.ok) return res.status(200).send('SERVER_ERROR_CODE_NOT_FOUND');
-
         const mainCode = await codeResponse.text();
-
         res.setHeader('Content-Type', 'text/javascript');
         return res.status(200).send(mainCode);
 
     } catch (error) {
-        return res.status(200).send('SERVER_ERROR_FATAL_EXCEPTION');
+        return res.status(200).send('SERVER_ERROR_FATAL');
     }
 }
