@@ -20,15 +20,29 @@ export default async function handler(req, res) {
         const authData = await authResponse.json();
         const allowedUsers = authData.allowed_users;
 
+        // Ищем ник без учета регистра
         const userKey = Object.keys(allowedUsers).find(k => k.toLowerCase() === sponsor.toLowerCase());
 
         if (!userKey) {
             return res.status(200).send('SERVER_ERROR_AUTH_FAILED');
         }
 
-        if (allowedUsers[userKey] !== hwid) {
+        // --- НОВАЯ ЛОГИКА ПРОВЕРКИ HWID ---
+        const allowedData = allowedUsers[userKey];
+        let isAuthorized = false;
+
+        if (Array.isArray(allowedData)) {
+            // Если в JSON массив, проверяем, есть ли в нем текущий hwid
+            isAuthorized = allowedData.includes(hwid);
+        } else {
+            // Если в JSON просто строка (для обратной совместимости)
+            isAuthorized = (allowedData === hwid);
+        }
+
+        if (!isAuthorized) {
             return res.status(200).send('SERVER_ERROR_HWID_MISMATCH');
         }
+        // ---------------------------------
 
         const codeUrl = `https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/main.js`;
         const codeResponse = await fetch(codeUrl, {
