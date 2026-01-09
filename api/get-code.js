@@ -4,13 +4,11 @@ export default async function handler(req, res) {
     const OWNER = "stakom";
     const PRIVATE_REPO = "sky-scripts";
 
-    // Базовая проверка наличия параметра
-    if (!sponsor) {
-        return res.status(200).send('SERVER_ERROR: Missing sponsor parameter');
-    }
+    // Всегда 200, чтобы Java не «палила» URL в чате при ошибках
+    if (!sponsor) return res.status(200).send('SERVER_ERROR_NO_SPONSOR');
 
     try {
-        // 1. Получаем список разрешенных пользователей из GitHub
+        // 1. Получаем список лицензированных спонсоров (владельцев)
         const authUrl = `https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/users.json`;
         const authResponse = await fetch(authUrl, {
             headers: { 
@@ -19,21 +17,17 @@ export default async function handler(req, res) {
             }
         });
 
-        if (!authResponse.ok) {
-            // Возвращаем 200, чтобы не провоцировать Java на вывод URL ошибки
-            return res.status(200).send('SERVER_ERROR: Auth Database unreachable');
-        }
+        if (!authResponse.ok) return res.status(200).send('SERVER_ERROR_AUTH_DB');
         
         const authData = await authResponse.json();
         const allowedUsers = authData.allowed_users.map(u => u.toLowerCase());
 
-        // 2. Проверка ника (регистронезависимая)
-        const userNick = sponsor.toLowerCase();
-        if (!allowedUsers.includes(userNick)) {
+        // 2. Проверяем, разрешен ли доступ этому спонсору
+        if (!allowedUsers.includes(sponsor.toLowerCase())) {
             return res.status(200).send('SERVER_ERROR_AUTH_FAILED');
         }
 
-        // 3. Получаем основной код скрипта (main.js) из GitHub
+        // 3. Если спонсор в списке — получаем чистый код скрипта
         const codeUrl = `https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/main.js`;
         const codeResponse = await fetch(codeUrl, {
             headers: { 
@@ -42,38 +36,15 @@ export default async function handler(req, res) {
             }
         });
 
-        if (!codeResponse.ok) {
-            return res.status(200).send('SERVER_ERROR: Script file not found on GitHub');
-        }
+        if (!codeResponse.ok) return res.status(200).send('SERVER_ERROR_NO_CODE');
 
-        let mainCode = await codeResponse.text();
+        const mainCode = await codeResponse.text();
 
-        // 4. Генерируем защиту (License Binding)
-        // Превращаем ник в массив ASCII-кодов, чтобы его нельзя было найти обычным поиском по тексту
-        const nickBytes = sponsor.split('').map(char => char.charCodeAt(0)).join(',');
-
-        const securityPrefix = `
-/* --- СИСТЕМА ЗАЩИТЫ --- */
-(function() {
-    var _target = [${nickBytes}].map(function(c){ return String.fromCharCode(c); }).join('');
-    if (typeof SponsorNickname === 'undefined' || SponsorNickname.toLowerCase() !== _target.toLowerCase()) {
-        Chat.log("§c§l[Лицензия] §fОшибка авторизации! Скрипт привязан к нику: §b" + _target);
-        throw "License mismatch";
-    }
-})();
-/* ----------------------- */
-`;
-
-        // 5. Собираем финальный код
-        // Можно также добавить замену меток внутри кода, если они там есть
-        const finalCode = securityPrefix + "\n" + mainCode;
-
-        // Отправляем результат
+        // 4. Отправляем код без лишних проверок внутри
         res.setHeader('Content-Type', 'text/javascript');
-        return res.status(200).send(finalCode);
+        return res.status(200).send(mainCode);
 
     } catch (error) {
-        // Даже при фатальной ошибке сервера возвращаем 200 с текстом ошибки
-        return res.status(200).send('SERVER_ERROR: ' + error.message);
+        return res.status(200).send('SERVER_ERROR_FATAL');
     }
 }
