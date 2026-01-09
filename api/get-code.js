@@ -3,31 +3,28 @@ const crypto = require('crypto');
 export default async function handler(req, res) {
     const { sponsor, hwid, sig, t } = req.query;
     
-    const SIARO = "MIEFKR";
+    const SIARO = "MIEFKR"; 
+    
     const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
     const OWNER = "stakom";
     const PRIVATE_REPO = "sky-scripts";
 
     if (!sponsor || !hwid || !sig || !t) {
-        return res.status(200).send('SERVER_ERROR_INVALID_REQUEST');
+        return res.status(200).send('SERVER_ERROR_BAD_REQUEST');
     }
 
-    // 1. ПРОВЕРКА ПОДПИСИ (Защита от подбора параметров)
-    const serverData = `${sponsor}:${hwid}:${SECRET_KEY}:${t}`;
-    const serverSig = crypto.createHash('md5').update(serverData).digest("hex");
+    const serverCheckData = sponsor + hwid + SIARO + t;
+    const serverSig = crypto.createHash('md5').update(serverCheckData).digest("hex");
 
     if (serverSig !== sig) {
-        return res.status(200).send('SERVER_ERROR_SIGNATURE_FAIL');
+        return res.status(200).send('SERVER_ERROR_SIGNATURE_MISMATCH');
     }
 
-    // 2. ПРОВЕРКА ВРЕМЕНИ (Ссылка живет 5 минут)
-    const requestTime = parseInt(t);
-    if (Date.now() - requestTime > 300000) {
+    if (Date.now() - parseInt(t) > 300000) {
         return res.status(200).send('SERVER_ERROR_LINK_EXPIRED');
     }
 
     try {
-        // Получаем список разрешенных юзеров
         const authUrl = `https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/users.json`;
         const authResponse = await fetch(authUrl, {
             headers: { 
@@ -36,15 +33,14 @@ export default async function handler(req, res) {
             }
         });
 
+        if (!authResponse.ok) return res.status(200).send('SERVER_ERROR_AUTH_DB');
+        
         const authData = await authResponse.json();
         const allowedUsers = authData.allowed_users;
 
-        // Проверка HWID
         if (!allowedUsers[sponsor] || allowedUsers[sponsor] !== hwid) {
-            return res.status(200).send('SERVER_ERROR_AUTH_FAILED');
+            return res.status(200).send('SERVER_ERROR_HWID_NOT_REGISTERED');
         }
-
-        // Получаем основной код (main.js)
         const codeUrl = `https://api.github.com/repos/${OWNER}/${PRIVATE_REPO}/contents/main.js`;
         const codeResponse = await fetch(codeUrl, {
             headers: { 
@@ -53,11 +49,14 @@ export default async function handler(req, res) {
             }
         });
 
+        if (!codeResponse.ok) return res.status(200).send('SERVER_ERROR_CODE_NOT_FOUND');
+
         const mainCode = await codeResponse.text();
+
         res.setHeader('Content-Type', 'text/javascript');
         return res.status(200).send(mainCode);
 
     } catch (error) {
-        return res.status(200).send('SERVER_ERROR_FATAL');
+        return res.status(200).send('SERVER_ERROR_FATAL_EXCEPTION');
     }
 }
